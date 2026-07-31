@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[test]'
+
+      - name: Verify the library has no runtime dependencies
+        # gpxkit's whole premise is standard library only. If a dependency ever
+        # sneaks into pyproject.toml, this fails before the tests do.
+        run: |
+          python - <<'EOF'
+          from importlib.metadata import requires
+          runtime = [r for r in (requires("gpxkit") or []) if "extra ==" not in r]
+          assert runtime == [], f"unexpected runtime dependencies: {runtime}"
+          print("no runtime dependencies")
+          EOF
+
+      - name: Test
+        run: pytest -v
