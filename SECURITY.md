@@ -43,7 +43,7 @@ Do **not** open a public issue for a security report.
 
 - Preferred: GitHub's **Security → Report a vulnerability** tab on this
   repository.
-- Fallback: email **joepetjr@gmail.com** with `gpxkit security` in the subject.
+- Fallback: email **backroadcreativeco@gmail.com** with `gpxkit security` in the subject.
 
 Please include the affected version or commit, the impact, and reproduction
 steps.
