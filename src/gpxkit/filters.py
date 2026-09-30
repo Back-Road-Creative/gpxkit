@@ -51,6 +51,8 @@ __all__ = [
     "TELEPORT_SPEED_CEILING_KMH",
     "TELEPORT_JUMP_FLOOR_KM",
     "TELEPORT_STEP_MULTIPLE",
+    "GROUND_VEHICLE_PROFILE",
+    "FilterProfile",
     "FilterReport",
     "exceeds_physical_speed",
     "filter_high_quality_points",
@@ -85,6 +87,53 @@ TELEPORT_STEP_MULTIPLE = 20.0
 _MAX_STRIP_FRACTION = 0.05
 
 
+@dataclass(frozen=True)
+class FilterProfile:
+    """The thresholds one filter run applied, under a name.
+
+    ``name`` is ``"ground-vehicle"`` only for the thresholds :data:`GROUND_VEHICLE_PROFILE`
+    documents and the keyword defaults use; any other combination is
+    ``"custom"``. ``gpxkit`` ships no walking, cycling, sailing or flight
+    profile, so a custom run is *not* a claim that the thresholds suit any
+    particular activity — that judgement stays with the caller.
+
+    The fixed 5 % cap on how much of either end the teleport test may strip is
+    not a tunable and is not part of the profile.
+    """
+
+    name: str
+    max_hdop: float
+    min_speed_mps: float
+    min_gap_sec: float
+    spatial_outlier_km: float
+    teleport_speed_ceiling_kmh: float
+    teleport_jump_floor_km: float
+    teleport_step_multiple: float
+
+
+# The one named profile: ground vehicles at roughly 1 Hz. The keyword defaults
+# of :func:`filter_high_quality_points` read from this, so it cannot drift from
+# what a default run actually applies.
+GROUND_VEHICLE_PROFILE = FilterProfile(
+    name="ground-vehicle",
+    max_hdop=3.0,
+    min_speed_mps=1.0,
+    min_gap_sec=1.0,
+    spatial_outlier_km=SPATIAL_OUTLIER_KM,
+    teleport_speed_ceiling_kmh=TELEPORT_SPEED_CEILING_KMH,
+    teleport_jump_floor_km=TELEPORT_JUMP_FLOOR_KM,
+    teleport_step_multiple=TELEPORT_STEP_MULTIPLE,
+)
+
+
+def _effective_profile(**thresholds: float) -> FilterProfile:
+    """The named profile if ``thresholds`` equal it, else a ``"custom"`` one."""
+    named = FilterProfile(name=GROUND_VEHICLE_PROFILE.name, **thresholds)
+    if named == GROUND_VEHICLE_PROFILE:
+        return GROUND_VEHICLE_PROFILE
+    return FilterProfile(name="custom", **thresholds)
+
+
 def exceeds_physical_speed(
     km: float,
     dt_sec: Optional[float],
@@ -110,13 +159,13 @@ def exceeds_physical_speed(
 def filter_high_quality_points(
     gps_points: Optional[Sequence[Any]],
     *,
-    max_hdop: float = 3.0,
-    min_speed_mps: float = 1.0,
-    min_gap_sec: float = 1.0,
-    spatial_outlier_km: float = SPATIAL_OUTLIER_KM,
-    teleport_speed_ceiling_kmh: float = TELEPORT_SPEED_CEILING_KMH,
-    teleport_jump_floor_km: float = TELEPORT_JUMP_FLOOR_KM,
-    teleport_step_multiple: float = TELEPORT_STEP_MULTIPLE,
+    max_hdop: float = GROUND_VEHICLE_PROFILE.max_hdop,
+    min_speed_mps: float = GROUND_VEHICLE_PROFILE.min_speed_mps,
+    min_gap_sec: float = GROUND_VEHICLE_PROFILE.min_gap_sec,
+    spatial_outlier_km: float = GROUND_VEHICLE_PROFILE.spatial_outlier_km,
+    teleport_speed_ceiling_kmh: float = GROUND_VEHICLE_PROFILE.teleport_speed_ceiling_kmh,
+    teleport_jump_floor_km: float = GROUND_VEHICLE_PROFILE.teleport_jump_floor_km,
+    teleport_step_multiple: float = GROUND_VEHICLE_PROFILE.teleport_step_multiple,
 ) -> list:
     """Return the points of ``gps_points`` that survive every noise test.
 
@@ -143,9 +192,10 @@ def filter_high_quality_points(
         themselves are returned unchanged — ``gpxkit`` never copies or rewrites
         your data.
 
-    The defaults are tuned for ground vehicles at roughly 1 Hz. Walking,
-    cycling, sailing and flight all want different numbers; every threshold is
-    a keyword argument for exactly that reason.
+    The defaults are :data:`GROUND_VEHICLE_PROFILE`, tuned for ground vehicles
+    at roughly 1 Hz. Walking, cycling, sailing and flight all want different
+    numbers; every threshold is a keyword argument for exactly that reason. To
+    see which thresholds a run used, call :func:`filter_points_with_report`.
     """
     return filter_points_with_report(
         gps_points,
@@ -185,6 +235,9 @@ class FilterReport:
             ``hdop``, ``speed``, ``duplicate``, ``spatial_outlier`` and
             ``teleport``. Every class is always present; the counts sum to
             ``input_count - len(points)``.
+        profile: The thresholds this run applied — :data:`GROUND_VEHICLE_PROFILE`
+            itself when they are the defaults, otherwise a ``"custom"``
+            :class:`FilterProfile` carrying the values actually used.
         outcome: ``"empty_input"`` when nothing was passed in, ``"all_rejected"``
             when points were passed in and none survived, else ``"ok"``. An
             all-rejected track is an explicit result, not an empty list that
@@ -195,6 +248,7 @@ class FilterReport:
     input_count: int
     rejected: Mapping[str, int]
     outcome: str
+    profile: FilterProfile
 
 
 def _coordinate_verdict(p: Any) -> Optional[str]:
@@ -223,21 +277,36 @@ def _coordinate_verdict(p: Any) -> Optional[str]:
 def filter_points_with_report(
     gps_points: Optional[Sequence[Any]],
     *,
-    max_hdop: float = 3.0,
-    min_speed_mps: float = 1.0,
-    min_gap_sec: float = 1.0,
-    spatial_outlier_km: float = SPATIAL_OUTLIER_KM,
-    teleport_speed_ceiling_kmh: float = TELEPORT_SPEED_CEILING_KMH,
-    teleport_jump_floor_km: float = TELEPORT_JUMP_FLOOR_KM,
-    teleport_step_multiple: float = TELEPORT_STEP_MULTIPLE,
+    max_hdop: float = GROUND_VEHICLE_PROFILE.max_hdop,
+    min_speed_mps: float = GROUND_VEHICLE_PROFILE.min_speed_mps,
+    min_gap_sec: float = GROUND_VEHICLE_PROFILE.min_gap_sec,
+    spatial_outlier_km: float = GROUND_VEHICLE_PROFILE.spatial_outlier_km,
+    teleport_speed_ceiling_kmh: float = GROUND_VEHICLE_PROFILE.teleport_speed_ceiling_kmh,
+    teleport_jump_floor_km: float = GROUND_VEHICLE_PROFILE.teleport_jump_floor_km,
+    teleport_step_multiple: float = GROUND_VEHICLE_PROFILE.teleport_step_multiple,
 ) -> FilterReport:
     """Run :func:`filter_high_quality_points` and report what it dropped.
 
     Takes the same keyword arguments and applies the same tests in the same
     order; ``result.points`` is exactly what the plain function returns.
     """
+    profile = _effective_profile(
+        max_hdop=max_hdop,
+        min_speed_mps=min_speed_mps,
+        min_gap_sec=min_gap_sec,
+        spatial_outlier_km=spatial_outlier_km,
+        teleport_speed_ceiling_kmh=teleport_speed_ceiling_kmh,
+        teleport_jump_floor_km=teleport_jump_floor_km,
+        teleport_step_multiple=teleport_step_multiple,
+    )
     if not gps_points:
-        return FilterReport(points=[], input_count=0, rejected=_no_rejections(), outcome="empty_input")
+        return FilterReport(
+            points=[],
+            input_count=0,
+            rejected=_no_rejections(),
+            outcome="empty_input",
+            profile=profile,
+        )
 
     rejected = _no_rejections()
     survivors: list = []
@@ -298,6 +367,7 @@ def filter_points_with_report(
         input_count=len(gps_points),
         rejected=rejected,
         outcome="ok" if survivors else "all_rejected",
+        profile=profile,
     )
 
 

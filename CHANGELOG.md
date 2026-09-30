@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `gpxkit.filters.filter_points_with_report` and `FilterReport` — the filter
   plus per-class rejected-point counts and an explicit `outcome`
   (`ok` / `empty_input` / `all_rejected`).
+- `gpxkit.filters.GROUND_VEHICLE_PROFILE` and `FilterProfile` — the existing
+  default thresholds, named. `FilterReport.profile` reports the thresholds a run
+  actually used (`"ground-vehicle"` for the defaults, `"custom"` otherwise). No
+  new activity profiles.
 
 ### Fixed
 

@@ -81,13 +81,20 @@ Need to know what was dropped? `filter_points_with_report` takes the same
 arguments and returns a `FilterReport`: the surviving `points`, the `input_count`,
 a `rejected` count for each row above, and an `outcome` (`"ok"`,
 `"empty_input"`, or `"all_rejected"` — so a track that was entirely noise is not
-mistaken for an empty input).
+mistaken for an empty input). It also carries `profile`: the thresholds that
+run actually applied. That is `GROUND_VEHICLE_PROFILE` (`max_hdop=3.0`,
+`min_speed_mps=1.0`, `min_gap_sec=1.0`, `spatial_outlier_km=500.0`, and the
+three teleport thresholds) when you passed nothing, or a `"custom"`
+`FilterProfile` holding your values. `gpxkit` has no walking, cycling, sailing
+or flight profile; a `"custom"` profile means "your numbers", not "validated for
+your activity".
 
 ```python
 from gpxkit import filter_points_with_report
 
 report = filter_points_with_report(raw_track)
 report.rejected["invalid_coordinate"], report.rejected["null_island"]
+report.profile.name   # "ground-vehicle", or "custom" if you changed a threshold
 ```
 
 The last two are the interesting pair, because the obvious single test does
@@ -269,7 +276,7 @@ pytest
 - **It does not parse GPX.** It has no XML parser, no file I/O, and no opinion
   about where your points came from. Bring your own parser; `gpxkit` starts at
   the list of points. That is also why it has no dependencies.
-- **The defaults are tuned for ground vehicles at roughly 1 Hz.** A 1000 km/h
+- **The defaults are `GROUND_VEHICLE_PROFILE`, tuned for ground vehicles at roughly 1 Hz.** A 1000 km/h
   ceiling is nonsense for a hiker and useless for an aircraft; a 500 km radius
   is absurd for a park run. Every threshold is a keyword argument for exactly
   that reason — but you do have to set them.
