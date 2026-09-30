@@ -8,8 +8,13 @@ same second when you only asked for one.
 
 :func:`filter_high_quality_points` removes those, in one pass, in this order:
 
-1. **Null island.** Exactly ``(0.0, 0.0)`` is the no-lock sentinel, not a spot
-   in the Gulf of Guinea.
+1. **Intake.** A fix whose latitude or longitude is NaN, infinite, or outside
+   ``[-90, 90]`` / ``[-180, 180]`` is not a position at all and is dropped. It
+   is never clamped into plausible geography. Then exactly ``(0.0, 0.0)`` — a
+   *valid* coordinate — is dropped as the no-lock sentinel, not a spot in the
+   Gulf of Guinea; that is a stated policy, counted separately. A coordinate
+   that cannot be read as a number at all is not evidence of anything and is
+   left to the later tests, as a missing field is.
 2. **HDOP ceiling.** Drop fixes whose reported horizontal dilution of precision
    is worse than ``max_hdop``. Points with no HDOP field are kept.
 3. **Speed floor.** Drop fixes whose *reported* speed is below
@@ -33,8 +38,10 @@ Why steps 5 and 6 are both needed is the interesting part; see the README.
 from __future__ import annotations
 
 import logging
+import math
 import statistics
-from typing import Any, Optional, Sequence
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional, Sequence
 
 from .geo import haversine_km
 from .points import get_field, point_lat, point_lon, point_seconds
@@ -44,8 +51,10 @@ __all__ = [
     "TELEPORT_SPEED_CEILING_KMH",
     "TELEPORT_JUMP_FLOOR_KM",
     "TELEPORT_STEP_MULTIPLE",
+    "FilterReport",
     "exceeds_physical_speed",
     "filter_high_quality_points",
+    "filter_points_with_report",
     "strip_teleport_runs",
 ]
 
@@ -138,29 +147,116 @@ def filter_high_quality_points(
     cycling, sailing and flight all want different numbers; every threshold is
     a keyword argument for exactly that reason.
     """
-    if not gps_points:
-        return []
+    return filter_points_with_report(
+        gps_points,
+        max_hdop=max_hdop,
+        min_speed_mps=min_speed_mps,
+        min_gap_sec=min_gap_sec,
+        spatial_outlier_km=spatial_outlier_km,
+        teleport_speed_ceiling_kmh=teleport_speed_ceiling_kmh,
+        teleport_jump_floor_km=teleport_jump_floor_km,
+        teleport_step_multiple=teleport_step_multiple,
+    ).points
 
+
+#: Rejection classes counted by :class:`FilterReport`, in the order the filter
+#: applies them.
+REJECTION_CLASSES = (
+    "invalid_coordinate",
+    "null_island",
+    "hdop",
+    "speed",
+    "duplicate",
+    "spatial_outlier",
+    "teleport",
+)
+
+
+@dataclass(frozen=True)
+class FilterReport:
+    """What :func:`filter_points_with_report` kept, and why it dropped the rest.
+
+    Attributes:
+        points: The surviving points, in input order (the same list
+            :func:`filter_high_quality_points` returns).
+        input_count: How many points went in.
+        rejected: Points dropped per class — ``invalid_coordinate`` (NaN,
+            infinite or out of range), ``null_island`` (a valid ``(0, 0)``),
+            ``hdop``, ``speed``, ``duplicate``, ``spatial_outlier`` and
+            ``teleport``. Every class is always present; the counts sum to
+            ``input_count - len(points)``.
+        outcome: ``"empty_input"`` when nothing was passed in, ``"all_rejected"``
+            when points were passed in and none survived, else ``"ok"``. An
+            all-rejected track is an explicit result, not an empty list that
+            looks like an empty input.
+    """
+
+    points: list
+    input_count: int
+    rejected: Mapping[str, int]
+    outcome: str
+
+
+def _coordinate_verdict(p: Any) -> Optional[str]:
+    """Classify a point's coordinates: a rejection class, or ``None`` to keep.
+
+    Unreadable or non-numeric coordinates return ``None``: the filter has no
+    opinion about a value it cannot read.
+    """
+    lat_raw = point_lat(p)
+    lon_raw = point_lon(p)
+    if lat_raw is None or lon_raw is None:
+        return None
+    try:
+        lat, lon = float(lat_raw), float(lon_raw)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return "invalid_coordinate"
+    if abs(lat) > 90.0 or abs(lon) > 180.0:
+        return "invalid_coordinate"
+    if lat == 0.0 and lon == 0.0:
+        return "null_island"
+    return None
+
+
+def filter_points_with_report(
+    gps_points: Optional[Sequence[Any]],
+    *,
+    max_hdop: float = 3.0,
+    min_speed_mps: float = 1.0,
+    min_gap_sec: float = 1.0,
+    spatial_outlier_km: float = SPATIAL_OUTLIER_KM,
+    teleport_speed_ceiling_kmh: float = TELEPORT_SPEED_CEILING_KMH,
+    teleport_jump_floor_km: float = TELEPORT_JUMP_FLOOR_KM,
+    teleport_step_multiple: float = TELEPORT_STEP_MULTIPLE,
+) -> FilterReport:
+    """Run :func:`filter_high_quality_points` and report what it dropped.
+
+    Takes the same keyword arguments and applies the same tests in the same
+    order; ``result.points`` is exactly what the plain function returns.
+    """
+    if not gps_points:
+        return FilterReport(points=[], input_count=0, rejected=_no_rejections(), outcome="empty_input")
+
+    rejected = _no_rejections()
     survivors: list = []
     last_ts: float | None = None
 
     for p in gps_points:
-        # (1) Null island: the no-lock sentinel a receiver emits before it has
-        # acquired satellites.
-        lat_raw = point_lat(p)
-        lon_raw = point_lon(p)
-        if lat_raw is not None and lon_raw is not None:
-            try:
-                if float(lat_raw) == 0.0 and float(lon_raw) == 0.0:
-                    continue
-            except (TypeError, ValueError):
-                pass
+        # (1) Intake: impossible coordinates, then the null-island sentinel a
+        # receiver emits before it has acquired satellites.
+        verdict = _coordinate_verdict(p)
+        if verdict is not None:
+            rejected[verdict] += 1
+            continue
 
         # (2) HDOP ceiling. A missing or unparseable field is not a rejection.
         hdop = get_field(p, "hdop")
         if hdop is not None:
             try:
                 if float(hdop) > max_hdop:
+                    rejected["hdop"] += 1
                     continue
             except (TypeError, ValueError):
                 pass
@@ -170,6 +266,7 @@ def filter_high_quality_points(
         if speed is not None:
             try:
                 if float(speed) < min_speed_mps:
+                    rejected["speed"] += 1
                     continue
             except (TypeError, ValueError):
                 pass
@@ -178,20 +275,34 @@ def filter_high_quality_points(
         # advance the clock and are never dropped for it.
         ts_sec = point_seconds(p)
         if ts_sec is not None and last_ts is not None and (ts_sec - last_ts) < min_gap_sec:
+            rejected["duplicate"] += 1
             continue
         if ts_sec is not None:
             last_ts = ts_sec
 
         survivors.append(p)
 
+    before = len(survivors)
     survivors = _strip_spatial_outliers(survivors, spatial_outlier_km)
+    rejected["spatial_outlier"] = before - len(survivors)
+    before = len(survivors)
     survivors = strip_teleport_runs(
         survivors,
         ceiling_kmh=teleport_speed_ceiling_kmh,
         jump_floor_km=teleport_jump_floor_km,
         step_multiple=teleport_step_multiple,
     )
-    return survivors
+    rejected["teleport"] = before - len(survivors)
+    return FilterReport(
+        points=survivors,
+        input_count=len(gps_points),
+        rejected=rejected,
+        outcome="ok" if survivors else "all_rejected",
+    )
+
+
+def _no_rejections() -> dict[str, int]:
+    return {name: 0 for name in REJECTION_CLASSES}
 
 
 def _strip_spatial_outliers(survivors: list, radius_km: float) -> list:

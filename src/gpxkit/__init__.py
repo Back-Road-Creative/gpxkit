@@ -30,8 +30,10 @@ from .filters import (
     TELEPORT_JUMP_FLOOR_KM,
     TELEPORT_SPEED_CEILING_KMH,
     TELEPORT_STEP_MULTIPLE,
+    FilterReport,
     exceeds_physical_speed,
     filter_high_quality_points,
+    filter_points_with_report,
     strip_teleport_runs,
 )
 from .geo import EARTH_RADIUS_KM, haversine_km
@@ -65,8 +67,10 @@ __all__ = [
     "TELEPORT_SPEED_CEILING_KMH",
     "TELEPORT_JUMP_FLOOR_KM",
     "TELEPORT_STEP_MULTIPLE",
+    "FilterReport",
     "exceeds_physical_speed",
     "filter_high_quality_points",
+    "filter_points_with_report",
     "strip_teleport_runs",
     # windows
     "locked_gps_coverage",

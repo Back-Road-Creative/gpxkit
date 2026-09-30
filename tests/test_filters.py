@@ -11,7 +11,12 @@ from types import SimpleNamespace
 import pytest
 from synthetic import BASE_LAT, BASE_LON, FAR_LAT, FAR_LON, Trackpoint, straight_track
 
-from gpxkit import exceeds_physical_speed, filter_high_quality_points, strip_teleport_runs
+from gpxkit import (
+    exceeds_physical_speed,
+    filter_high_quality_points,
+    filter_points_with_report,
+    strip_teleport_runs,
+)
 
 
 def _p(**kwargs):
@@ -99,6 +104,143 @@ class TestNullIsland:
         ]
         assert len(filter_high_quality_points(on_the_equator)) == 2
         assert len(filter_high_quality_points(on_the_meridian)) == 2
+
+
+class TestInvalidCoordinates:
+    """NaN, infinity and out-of-range values are rejected at intake.
+
+    They are never clamped into plausible geography: a fix the receiver
+    reported as latitude 123 is not a fix at latitude 90.
+    """
+
+    BAD = [
+        (float("nan"), BASE_LON),
+        (BASE_LAT, float("nan")),
+        (float("inf"), BASE_LON),
+        (BASE_LAT, float("-inf")),
+        (90.0001, BASE_LON),
+        (-90.0001, BASE_LON),
+        (BASE_LAT, 180.0001),
+        (BASE_LAT, -180.0001),
+        (123.0, 400.0),
+    ]
+
+    @pytest.mark.parametrize("lat,lon", BAD)
+    def test_a_single_invalid_point_is_rejected(self, lat, lon):
+        assert filter_high_quality_points([_p(lat=lat, lon=lon, time=_ts(0))]) == []
+
+    @pytest.mark.parametrize("lat,lon", BAD)
+    def test_rejected_on_every_point_shape(self, lat, lon):
+        assert filter_high_quality_points([(0.0, lat, lon)]) == []
+        assert filter_high_quality_points([(lat, lon)]) == []
+        assert filter_high_quality_points([{"time": 0.0, "lat": lat, "lon": lon}]) == []
+
+    @pytest.mark.parametrize("lat,lon", [(90.0, 0.5), (-90.0, 0.5), (10.0, 180.0), (10.0, -180.0)])
+    def test_the_inclusive_bounds_are_valid(self, lat, lon):
+        assert len(filter_high_quality_points([_p(lat=lat, lon=lon, time=_ts(0))])) == 1
+
+    def test_numeric_strings_are_judged_by_value(self):
+        assert filter_high_quality_points([_p(lat="nan", lon="10", time=_ts(0))]) == []
+        assert filter_high_quality_points([_p(lat="95", lon="10", time=_ts(0))]) == []
+
+    def test_a_mixed_track_keeps_only_the_valid_points(self):
+        good = [
+            _p(lat=BASE_LAT + 0.001 * i, lon=BASE_LON, time=_ts(2 * i)) for i in range(6)
+        ]
+        bad = [
+            _p(lat=float("nan"), lon=BASE_LON, time=_ts(1)),
+            _p(lat=BASE_LAT, lon=999.0, time=_ts(5)),
+            _p(lat=float("inf"), lon=float("inf"), time=_ts(9)),
+        ]
+        mixed = [good[0], bad[0], good[1], good[2], bad[1], good[3], bad[2], good[4], good[5]]
+        out = filter_high_quality_points(mixed)
+        assert out == good
+        assert all(a is b for a, b in zip(out, good))
+
+    def test_an_invalid_point_does_not_advance_the_duplicate_clock(self):
+        # The bad fix at t=1.0 must not cause the valid fix at t=1.5 to be
+        # dropped as a sub-second duplicate of it.
+        points = [
+            _p(lat=BASE_LAT, lon=BASE_LON, time=_ts(0.0)),
+            _p(lat=float("nan"), lon=BASE_LON, time=_ts(1.0)),
+            _p(lat=BASE_LAT + 0.001, lon=BASE_LON, time=_ts(1.5)),
+        ]
+        assert len(filter_high_quality_points(points)) == 2
+
+    def test_a_nan_fix_cannot_poison_the_median(self):
+        track = straight_track(n=30)
+        poisoned = list(track)
+        poisoned.insert(10, Trackpoint(lat=float("nan"), lon=float("nan"), timestamp=9.5))
+        assert filter_high_quality_points(poisoned) == filter_high_quality_points(track)
+
+    def test_a_valid_null_island_zero_follows_the_documented_policy(self):
+        # (0, 0) is in range, so it is the null-island sentinel rule that
+        # rejects it, and the report says so separately from invalid values.
+        report = filter_points_with_report([_p(lat=0.0, lon=0.0, time=_ts(0))])
+        assert report.points == []
+        assert report.rejected["null_island"] == 1
+        assert report.rejected["invalid_coordinate"] == 0
+
+
+class TestFilterReport:
+    def test_counts_every_rejection_class_separately(self):
+        points = [
+            _p(lat=BASE_LAT, lon=BASE_LON, time=_ts(0)),
+            _p(lat=float("nan"), lon=BASE_LON, time=_ts(2)),
+            _p(lat=95.0, lon=BASE_LON, time=_ts(4)),
+            _p(lat=0.0, lon=0.0, time=_ts(6)),
+            _p(lat=BASE_LAT + 0.001, lon=BASE_LON, hdop=9.0, time=_ts(8)),
+            _p(lat=BASE_LAT + 0.002, lon=BASE_LON, speed_mps=0.0, time=_ts(10)),
+            _p(lat=BASE_LAT + 0.003, lon=BASE_LON, time=_ts(12)),
+            _p(lat=BASE_LAT + 0.003, lon=BASE_LON, time=_ts(12.2)),
+        ]
+        report = filter_points_with_report(points)
+        assert report.input_count == 8
+        assert len(report.points) == 2
+        assert report.rejected["invalid_coordinate"] == 2
+        assert report.rejected["null_island"] == 1
+        assert report.rejected["hdop"] == 1
+        assert report.rejected["speed"] == 1
+        assert report.rejected["duplicate"] == 1
+        assert report.rejected["spatial_outlier"] == 0
+        assert report.rejected["teleport"] == 0
+        assert sum(report.rejected.values()) == report.input_count - len(report.points)
+
+    def test_outlier_and_teleport_rejections_are_counted(self):
+        report = filter_points_with_report(
+            [_p(lat=lat, lon=lon, time=_ts(i)) for i, (lat, lon) in enumerate(
+                [(FAR_LAT, FAR_LON)] + [(BASE_LAT + 0.0001 * i, BASE_LON) for i in range(60)]
+            )]
+        )
+        dropped = report.input_count - len(report.points)
+        assert dropped >= 1
+        assert report.rejected["spatial_outlier"] + report.rejected["teleport"] == dropped
+
+    @pytest.mark.parametrize("empty", [[], None, ()])
+    def test_empty_input_outcome(self, empty):
+        report = filter_points_with_report(empty)
+        assert report.points == []
+        assert report.input_count == 0
+        assert report.outcome == "empty_input"
+
+    def test_all_invalid_input_has_an_explicit_outcome(self):
+        report = filter_points_with_report(
+            [_p(lat=float("nan"), lon=1.0), _p(lat=1.0, lon=500.0), _p(lat=0.0, lon=0.0)]
+        )
+        assert report.points == []
+        assert report.input_count == 3
+        assert report.outcome == "all_rejected"
+
+    def test_outcome_ok_when_anything_survives(self):
+        report = filter_points_with_report(
+            [_p(lat=BASE_LAT, lon=BASE_LON, time=_ts(0)), _p(lat=99.0, lon=0.0)]
+        )
+        assert report.outcome == "ok"
+        assert len(report.points) == 1
+
+    def test_points_match_the_plain_function(self):
+        pts = straight_track(n=40)
+        assert filter_points_with_report(pts).points == filter_high_quality_points(pts)
 
 
 class TestSubSecondDuplicates:
