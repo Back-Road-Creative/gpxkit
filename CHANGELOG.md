@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `gpxkit.filters.filter_points_with_report` and `FilterReport` — the filter
+  plus per-class rejected-point counts and an explicit `outcome`
+  (`ok` / `empty_input` / `all_rejected`).
+- `gpxkit.filters.GROUND_VEHICLE_PROFILE` and `FilterProfile` — the existing
+  default thresholds, named. `FilterReport.profile` reports the thresholds a run
+  actually used (`"ground-vehicle"` for the defaults, `"custom"` otherwise). No
+  new activity profiles.
+
+### Fixed
+
+- `filter_high_quality_points` now drops fixes whose latitude or longitude is
+  NaN, infinite, or out of range (`|lat| > 90`, `|lon| > 180`) at intake,
+  before the null-island and statistical tests. Previously such a fix passed
+  through and could skew the cluster median.
+
 ## 0.1.0
 
 First release.

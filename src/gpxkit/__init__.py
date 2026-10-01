@@ -26,12 +26,16 @@ Modules:
 from __future__ import annotations
 
 from .filters import (
+    GROUND_VEHICLE_PROFILE,
     SPATIAL_OUTLIER_KM,
     TELEPORT_JUMP_FLOOR_KM,
     TELEPORT_SPEED_CEILING_KMH,
     TELEPORT_STEP_MULTIPLE,
+    FilterProfile,
+    FilterReport,
     exceeds_physical_speed,
     filter_high_quality_points,
+    filter_points_with_report,
     strip_teleport_runs,
 )
 from .geo import EARTH_RADIUS_KM, haversine_km
@@ -65,8 +69,12 @@ __all__ = [
     "TELEPORT_SPEED_CEILING_KMH",
     "TELEPORT_JUMP_FLOOR_KM",
     "TELEPORT_STEP_MULTIPLE",
+    "GROUND_VEHICLE_PROFILE",
+    "FilterProfile",
+    "FilterReport",
     "exceeds_physical_speed",
     "filter_high_quality_points",
+    "filter_points_with_report",
     "strip_teleport_runs",
     # windows
     "locked_gps_coverage",
